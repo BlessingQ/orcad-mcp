@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import functools
 import locale
 import logging
@@ -646,6 +647,59 @@ def export_netlist(path: str | None = None, design: str | None = None, overwrite
         "parts": len(packages),
         "nets": sum(1 for n in nets if n["pins"]),
         "warnings": warnings,
+    }
+
+
+@tool(CONTROL)
+def export_bom(
+    path: str | None = None,
+    formats: list[Literal["bom", "xlsx"]] | None = None,
+    properties: list[str] | None = None,
+    design: str | None = None,
+    overwrite: bool = False,
+) -> dict:
+    """Write the bill of materials in the layout of Capture's Tools > Bill of Materials report: a header from
+    the title block of page 1 (Title, Revised, Doc, Revision), then Item / Quantity / Reference / Part with
+    one line per Value (references sorted, comma separated, each multi-section package once).
+
+    formats: "bom" = Capture's tab-separated .BOM text (ANSI, CRLF), "xlsx" = the same report as an Excel
+    sheet; default both. properties adds columns after Part (e.g. ["PCB Footprint"]) and also splits lines
+    by them. path: absolute output path, extension optional (default <design folder>\\<design name>);
+    existing files are only replaced with overwrite=true.
+    """
+    from . import bomfile
+
+    fmts = list(dict.fromkeys(formats or ["bom", "xlsx"]))
+    keys = ["Value", *[p for p in (properties or []) if p.strip() and p.lower() != "value"]]
+    design_path, rows = _parts(design, keys)
+    base = Path(path) if path else Path(design_path)
+    if not base.is_absolute():
+        raise ValueError("path must be absolute")
+    if base.suffix.lower() in (".bom", ".xlsx", ".dsn"):
+        base = base.with_suffix("")
+    targets = {f: base.parent / f"{base.name}.{'BOM' if f == 'bom' else 'xlsx'}" for f in fmts}
+    existing = [str(t) for t in targets.values() if t.exists()]
+    if existing and not overwrite:
+        raise FileExistsError(f"{', '.join(existing)} exists; pass overwrite=true to replace")
+    items = [{"refdes": r["refdes"], "reference": r["reference"], **{k: r.get(k) for k in keys}} for r in rows]
+    bom = bomfile.capture_order(bom_rows(items, keys))
+    title = bridge.call("title_block", design_path)["properties"]
+    now = datetime.datetime.now()
+    files = {}
+    if "bom" in targets:
+        text = bomfile.bom_text(bom, keys, title, now)
+        targets["bom"].write_bytes(text.encode(locale.getpreferredencoding(False), errors="replace"))
+        files["bom"] = str(targets["bom"])
+    if "xlsx" in targets:
+        bomfile.write_xlsx(targets["xlsx"], bom, keys, title, now)
+        files["xlsx"] = str(targets["xlsx"])
+    header = bomfile.header_fields(title)
+    return {
+        "design": design_path,
+        "files": files,
+        "lines": len(bom),
+        "parts": sum(r["quantity"] for r in bom),
+        "header": header,
     }
 
 

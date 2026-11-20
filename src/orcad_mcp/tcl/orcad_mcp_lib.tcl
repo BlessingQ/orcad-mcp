@@ -1138,6 +1138,35 @@ proc ::orcadmcp::c_check_points {spec name points} {
     return [jobj page [js $pname] points [jarr $out]]
 }
 
+# Properties of the title block on the page with the lowest page number (Capture's BOM header uses it).
+proc ::orcadmcp::c_title_block {spec} {
+    set d [design $spec]
+    set st [DboState]
+    set best ""
+    set bestn 0
+    set props {}
+    foreach {sname pname pg} [pages $d] {
+        set n [pagenum $pg]
+        if {$best ne "" && $n >= $bestn} {
+            continue
+        }
+        set it [$pg NewTitleBlocksIter $st]
+        set tb [$it NextTitleBlock $st]
+        if {$tb ne "NULL"} {
+            set best $pname
+            set bestn $n
+            set props [effprops $tb]
+        }
+        delete_DboPageTitleBlocksIter $it
+    }
+    $st -delete
+    set items {}
+    foreach {n v e} $props {
+        lappend items $n [js $v]
+    }
+    return [jobj design [js [getstr $d GetName]] page [js $best] properties [eval [linsert $items 0 jobj]]]
+}
+
 # ---------------------------------------------------------------------------------------------
 
 proc ::orcadmcp::call {cmd args} {

@@ -10,7 +10,7 @@ AI 어시스턴트(Claude Code, Claude Desktop 등 MCP 클라이언트)가 실�
 | 읽기 | 열린 설계·페이지, 부품(Value, PCB Footprint, 모든 속성), 핀별 연결 넷, 전체 넷 연결(페이지 간 연결 포함, Capture 넷리스터와 같은 기준) |
 | 수정 | 여러 부품의 속성을 한 번에 변경(Value, PCB Footprint, Part Reference, 사용자 속성). 먼저 전부 검사한 뒤 적용하고, 하나라도 실패하면 이미 바꾼 것도 되돌림 |
 | 저장 | `.dsn` 저장(저장 전에 자동 백업) |
-| BOM | 원하는 속성으로 묶은 BOM, CSV 저장 |
+| BOM | 원하는 속성으로 묶은 BOM, CSV 저장. Capture `.BOM` 보고서 형식과 같은 내용의 `.xlsx`로 출력 |
 | PADS 넷리스트 | PADS Layout용 PADS PowerPCB ASCII 넷리스트(`.asc`), Capture의 PADS 포매터와 같은 형식 |
 | 그리기 | 부품·선·페이지 연결 커넥터·전원/GND 심볼·접점·NC 표시 배치, 심볼 이름 변경, 영역 삭제(먼저 목록 확인), 페이지 이동 |
 | 라이브러리 | Capture 없이 `.olb`에 부품 추가(사각형 몸체, `A5`·`SH1` 같은 핀 번호 가능) |
@@ -104,6 +104,7 @@ claude mcp add --scope user orcad -- uvx orcad-mcp
 | `save_design` | `.dsn` 저장 (먼저 `%USERPROFILE%\.orcad-mcp\backups`에 백업) |
 | `open_design` / `close_design` | Capture에 열려 있지 않은 `.dsn`을 창 없이 불러오기 / 닫기 |
 | `export_netlist` | PADS PowerPCB ASCII 넷리스트(`.asc`) |
+| `export_bom` | Capture의 `.BOM` 보고서 형식과 같은 내용의 `.xlsx`로 BOM 출력(제목 블록 머리말, Value별 한 줄) |
 | `active_page` / `goto_page` | Capture가 보여 주는 페이지 확인 / 다른 페이지로 이동(View > Next/Previous Page) |
 | `page_objects` | 페이지 구성: 부품(영역, 핀 좌표), 심볼, 선. 특정 영역만 볼 수 있음 |
 | `place_part` | 라이브러리 부품 배치 + 참조번호·Value·풋프린트 지정, 핀 좌표 반환 |

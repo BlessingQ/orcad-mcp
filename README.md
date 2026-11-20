@@ -10,7 +10,8 @@ client) read and edit **OrCAD Capture** schematics while Capture is running.
 - **Edit** part properties in bulk: Value, PCB Footprint, Part Reference, user properties. All changes of a
   call are checked first and applied together, with rollback on failure
 - **Save** the design (the `.dsn` is backed up first)
-- **BOM**: grouped by any properties, optionally written as CSV
+- **BOM**: grouped by any properties, optionally written as CSV; or exported as Capture's own `.BOM` report and
+  the same report as `.xlsx`
 - **PADS netlist**: writes a PADS PowerPCB ASCII netlist (`.asc`) for PADS Layout, in the layout Capture's
   own PADS formatter uses
 - **Draw**: place parts, wires, off-page connectors, power/ground symbols, junctions and no-connect marks;
@@ -107,6 +108,7 @@ to fetch a new release; the server updates the installed bridge script when it s
 | `save_design` | Save to the `.dsn` (backup to `%USERPROFILE%\.orcad-mcp\backups` first) |
 | `open_design` / `close_design` | Load a `.dsn` that is not open in Capture (no window) and unload it again |
 | `export_netlist` | PADS PowerPCB ASCII netlist (`.asc`) |
+| `export_bom` | Bill of materials as Capture's `.BOM` report and/or the same report as `.xlsx` (header from the title block, one line per Value) |
 | `active_page` / `goto_page` | Which page Capture shows / show another page (View > Next/Previous Page) |
 | `page_objects` | Page geometry: parts with bounding box and pin coordinates, symbols, wires (optionally only an area) |
 | `place_part` | Place a library part and set reference, value, footprint; returns its pin coordinates |

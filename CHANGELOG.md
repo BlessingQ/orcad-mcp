@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 - 2026-11-20
+
+- `export_bom`: writes the bill of materials as Capture's Tools > Bill of Materials report (`.BOM`: title block
+  header, Item / Quantity / Reference / Part, tab separated, ANSI, CRLF, Capture's reference order) and the same
+  report as an Excel sheet (`.xlsx`). Optional extra columns such as PCB Footprint. Checked against a `.BOM` that
+  Capture 16.5 wrote for a 155-part design: identical apart from the report time stamp.
+- New dependency: openpyxl.
+
 ## 0.2.3 - 2026-11-20
 
 - Tool annotations follow the MCP meaning of `destructiveHint` (false = only additive updates): the tools that
