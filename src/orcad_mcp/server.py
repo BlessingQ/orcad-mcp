@@ -5,10 +5,11 @@ from __future__ import annotations
 import functools
 import locale
 import logging
+import re
 import shutil
 import time
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -17,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from . import install as installer
-from .bridge import BRIDGE_VERSION, Bridge, BridgeError, OrcadError
+from .bridge import BRIDGE_VERSION, Bridge, BridgeError, OrcadError, TclError
 from .config import Settings
 from .netlist import (
     bom_csv,
@@ -44,8 +45,15 @@ Reads and edits OrCAD Capture schematics (16.5 and later) through a small Tcl br
 * Capture's Edit > Undo does not cover changes made here. set_part_properties returns the old values, so
   restore them with another set_part_properties call if needed.
 * Scripts run on Capture's GUI thread: while a modal dialog is open in Capture, calls wait or time out.
-* Coordinates are Capture database units (1/100 inch); rotation is 0-3 (x 90 degrees).
-* run_tcl runs any Tcl in Capture (Dbo* database API, Capture commands). Prefer the dedicated tools.
+* Coordinates are Capture database units (1/100 inch, y grows downwards); rotation is 0-3 (x 90 degrees).
+* Drawing: page_objects (free space, pin coordinates) -> goto_page -> place_part / place_wire /
+  place_symbol / place_marks -> check_points or list_nets to verify. Placement works on the page Capture
+  shows. Connect new parts with short wires and off-page connectors or power/ground symbols named like the
+  existing nets instead of long wires. delete_area lists first and deletes only with apply=true.
+* create_library_parts adds parts to a .olb without Capture; restart Capture afterwards.
+* run_tcl runs any Tcl in Capture (Dbo* database API, Capture commands). Prefer the dedicated tools. Two
+  mistakes crash Capture (Tcl catch cannot stop it): calling a method on a NULL Dbo result, and calling
+  undocumented GUI commands (GetWindows, GetActiveWindow, GetActivePage, ...); run_tcl refuses the latter.
 """
 
 log = logging.getLogger("orcad_mcp")
@@ -311,6 +319,244 @@ def set_part_properties(changes: list[PropertyChange], design: str | None = None
     return bridge.call("set_props", _spec(design), triples, True)
 
 
+# --------------------------------------------------------------------------------------------------
+# page editing (Capture GUI commands on the page shown in the active window)
+# --------------------------------------------------------------------------------------------------
+
+Point = Annotated[list[int], Field(min_length=2, max_length=2, description="[x, y] in database units (1/100 inch)")]
+
+
+def _points(points: list[list[int]]) -> list[list[int]]:
+    out = []
+    for p in points:
+        if len(p) != 2:
+            raise ValueError(f"a point is [x, y], got {p}")
+        out.append([int(p[0]), int(p[1])])
+    return out
+
+
+@tool(CONTROL)
+def active_page() -> dict:
+    """The page Capture shows in its active window: design, schematic folder, page name, page number, metric.
+
+    Capture has no safe query for this, so a 0.2 mm marker wire is drawn in the page corner and deleted again
+    (the page is marked modified). All page values are null when the active window is not a schematic page.
+    """
+    return bridge.call("active_page")
+
+
+@tool(CONTROL)
+def goto_page(page: str, design: str | None = None) -> dict:
+    """Show another page (name, or "schematic/page") of the same schematic folder in Capture's active window,
+    by stepping View > Next Page / Previous Page (they follow the page numbers). The placement tools work on
+    the page that is shown, so call this first. A schematic page of the design must already be shown."""
+    return bridge.call("goto_page", _spec(design), page.strip())
+
+
+@tool(READ)
+def page_objects(page: str, design: str | None = None, area: list[int] | None = None) -> dict:
+    """Geometry of one page in database units (1/100 inch, y grows downwards): parts (placement point,
+    rotation, bounding box incl. their text, pins with connection-point coordinates), power/ground symbols
+    and off-page connectors (placement point, bounding box), wires (net, end points).
+
+    Use it to find free space and pin coordinates before placing. area=[x1, y1, x2, y2] keeps only the
+    objects that touch that rectangle. The page does not need to be shown.
+    """
+    data = bridge.call("page_objects", _spec(design), page.strip())
+    if area:
+        if len(area) != 4:
+            raise ValueError("area is [x1, y1, x2, y2]")
+        x1, y1, x2, y2 = area
+
+        def touches(box: list) -> bool:
+            return box[2] >= x1 and box[0] <= x2 and box[3] >= y1 and box[1] <= y2
+
+        data["parts"] = [p for p in data["parts"] if touches(p["bbox"])]
+        data["symbols"] = [s for s in data["symbols"] if touches(s["bbox"])]
+        data["wires"] = [
+            w
+            for w in data["wires"]
+            if touches(
+                [
+                    min(w["start"][0], w["end"][0]),
+                    min(w["start"][1], w["end"][1]),
+                    max(w["start"][0], w["end"][0]),
+                    max(w["start"][1], w["end"][1]),
+                ]
+            )
+        ]
+    return data
+
+
+@tool(WRITE)
+def place_part(
+    page: str,
+    library: str,
+    part: str,
+    x: int,
+    y: int,
+    refdes: str | None = None,
+    value: str | None = None,
+    footprint: str | None = None,
+    design: str | None = None,
+) -> dict:
+    """Place a library part (library = full .olb path) on the page shown in Capture with its placement point
+    at (x, y), then set Part Reference, Value and PCB Footprint. Returns the pins with the coordinates of
+    their connection points, to wire them with place_wire / place_symbol.
+
+    Use goto_page first. Edit > Undo in Capture does not cover it; remove it again with delete_area.
+    """
+    return bridge.call(
+        "place_part",
+        _spec(design),
+        page.strip(),
+        library,
+        part,
+        int(x),
+        int(y),
+        refdes or "",
+        value or "",
+        footprint or "",
+    )
+
+
+@tool(WRITE)
+def place_wire(page: str, points: list[Point], design: str | None = None) -> dict:
+    """Draw a wire through points [[x, y], ...] (horizontal or vertical segments) on the page shown.
+
+    Wires connect where an end lands on a pin connection point or on another wire's end. A wire that only
+    crosses another one, or ends in the middle of it, does not connect: add a junction there (place_marks).
+    The result lists the nets of the wires at the given points and whether both ends are connection points.
+    """
+    return bridge.call("place_wire", _spec(design), page.strip(), _points(points))
+
+
+@tool(WRITE)
+def place_symbol(
+    page: str,
+    kind: Literal["offpage", "power", "ground"],
+    name: str,
+    x: int,
+    y: int,
+    symbol: str | None = None,
+    library: str | None = None,
+    offset: list[int] | None = None,
+    design: str | None = None,
+) -> dict:
+    """Place an off-page connector, power or ground symbol whose connection point is at (x, y).
+
+    Off-page connectors with the same name connect across the pages of a schematic folder; power and ground
+    symbols connect by name everywhere. Defaults from CAPSYM.OLB: offpage OFFPAGELEFT-L (connection point at
+    its left end, text to the right; OFFPAGELEFT-R has it at the right end), power VCC_ARROW, ground GND
+    (GND_SIGNAL, GND_POWER, GND_EARTH also known). For another symbol pass offset = connection point minus
+    placement point.
+    """
+    default = {"offpage": "OFFPAGELEFT-L", "power": "VCC_ARROW", "ground": "GND"}[kind]
+    off = offset or []
+    if off and len(off) != 2:
+        raise ValueError("offset is [dx, dy]")
+    return bridge.call(
+        "place_symbol",
+        _spec(design),
+        page.strip(),
+        kind,
+        name,
+        int(x),
+        int(y),
+        symbol or default,
+        library or "",
+        [int(v) for v in off],
+    )
+
+
+@tool(WRITE)
+def place_marks(
+    page: str, kind: Literal["junction", "no_connect"], points: list[Point], design: str | None = None
+) -> dict:
+    """Place junctions (to join a wire end to the middle of another wire) or no-connect marks (on unused pin
+    connection points) at the given points of the page shown."""
+    return bridge.call("place_marks", _spec(design), page.strip(), kind, _points(points))
+
+
+@tool(WRITE)
+def delete_area(page: str, x1: int, y1: int, x2: int, y2: int, apply: bool = False, design: str | None = None) -> dict:
+    """Delete everything on a page that touches the rectangle (Capture's area select takes objects that
+    intersect it, not only enclosed ones, and the bounding box of a part includes its text).
+
+    With apply=false (default) nothing is deleted: the result lists what would go. Check it, then call again
+    with apply=true; the page must be shown for that. "remaining" lists what still touches the area afterwards.
+    """
+    return bridge.call("delete_area", _spec(design), page.strip(), int(x1), int(y1), int(x2), int(y2), bool(apply))
+
+
+@tool(WRITE)
+def rename_symbol(page: str, x: int, y: int, name: str, design: str | None = None) -> dict:
+    """Rename the power/ground symbol or off-page connector whose bounding box contains (x, y) on the page
+    shown (this moves it to another net)."""
+    return bridge.call("rename_symbol", _spec(design), page.strip(), int(x), int(y), name)
+
+
+@tool(WRITE)
+def set_no_connect(refdes: str, pins: list[str], no_connect: bool, design: str | None = None) -> dict:
+    """Set or clear the no-connect flag of pins (numbers or names) of a part, directly in the database
+    (no page needs to be shown). Clear it when wiring a pin that was marked unused."""
+    if not pins:
+        raise ValueError("no pins given")
+    return bridge.call("set_no_connect", _spec(design), refdes.strip(), [str(p) for p in pins], bool(no_connect))
+
+
+@tool(READ)
+def check_points(page: str, points: list[Point], design: str | None = None) -> dict:
+    """For each point: is it a connection point (pin end, wire end, symbol) and which nets do wires ending
+    there belong to. Use it to verify a placement."""
+    return bridge.call("check_points", _spec(design), page.strip(), _points(points))
+
+
+# --------------------------------------------------------------------------------------------------
+# libraries
+# --------------------------------------------------------------------------------------------------
+
+
+class LibPin(BaseModel):
+    number: str = Field(description="Pin number as on the footprint: 1, 2, A5, SH1 ...")
+    name: str = Field(description="Pin name shown on the symbol")
+    side: Literal["L", "R", "B"] = Field(description="Body side: L left, R right, B bottom")
+    pos: int = Field(description="y of the pin (L, R) or x (B) in database units, on the 10-unit grid")
+
+
+class LibPart(BaseModel):
+    name: str = Field(description="New package/part name")
+    footprint: str = Field(description="PCB Footprint")
+    value: str | None = Field(default=None, description="Default Value (default: the name)")
+    prefix: str = Field(default="U", description="Reference prefix: U, J, R ...")
+    body: list[int] = Field(description="Body rectangle [x1, y1, x2, y2]; pins are 30 long, outside the body")
+    pins: list[LibPin]
+    template: str | None = Field(
+        default=None,
+        description="Existing package in the library with at least as many pins to copy from "
+        "(default: the smallest that fits)",
+    )
+
+
+@tool(WRITE)
+def create_library_parts(library: str, parts: list[LibPart]) -> dict:
+    """Add new parts to an OrCAD library (.olb), all pins passive, with a rectangular body.
+
+    Capture is not used: Cadence's own Tcl shell edits a copy of the library through the OrCAD database API,
+    the copy is checked, the original is backed up to %USERPROFILE%\\.orcad-mcp\\backups and replaced. Capture
+    keeps libraries in memory: restart Capture before placing the new parts. Existing parts are not changed;
+    a name that already exists is refused.
+    """
+    from . import libedit
+
+    lib = Path(library)
+    if not lib.is_absolute():
+        raise ValueError("library must be an absolute path to a .olb file")
+    if not lib.is_file():
+        raise FileNotFoundError(f"{lib} does not exist")
+    return libedit.add_parts(settings, lib, [p.model_dump() for p in parts])
+
+
 def _backup(dsn: Path) -> str | None:
     if not settings.backup or not dsn.is_file():
         return None
@@ -326,11 +572,20 @@ def _backup(dsn: Path) -> str | None:
 
 @tool(WRITE)
 def save_design(design: str | None = None) -> dict:
-    """Save the design to its .dsn file (like File > Save). The current .dsn is copied to
-    %USERPROFILE%\\.orcad-mcp\\backups first. Ask the user before saving."""
+    """Save the design to its .dsn file. The current .dsn is copied to %USERPROFILE%\\.orcad-mcp\\backups
+    first. Ask the user before saving.
+
+    When a page of the design is shown, Capture's File > Save is used (like Ctrl+S, "via": "menu"); otherwise
+    the design is saved through the database ("via": "database").
+    """
     info = bridge.call("resolve", _spec(design))
     backup = _backup(Path(info["path"]))
-    result = bridge.call("save", info["path"])
+    try:
+        result = bridge.call("save_gui", info["path"])
+        result["via"] = "menu"
+    except TclError:
+        result = bridge.call("save", info["path"])
+        result["via"] = "database"
     result["had_unsaved_changes"] = info["modified"]
     result["backup"] = backup
     return result
@@ -392,16 +647,74 @@ def export_netlist(path: str | None = None, design: str | None = None, overwrite
 # --------------------------------------------------------------------------------------------------
 
 
+# Capture GUI commands without a documented signature. Calling them (e.g. without the arguments they
+# expect) crashed Capture 16.5 with an access violation that Tcl catch cannot stop.
+UNSAFE_COMMANDS = frozenset(
+    {
+        "GetWindows",
+        "GetActiveWindow",
+        "GetActivePage",
+        "GetActiveOpjName",
+        "GetParent",
+        "GetClass",
+        "GetSubControls",
+        "GetControlName",
+        "GetControlType",
+        "GetControlValue",
+        "GetMenu",
+        "GetSubMenu",
+        "GetSystemMenu",
+        "GetMenuItemCount",
+        "GetMenuItemId",
+        "GetMenuState",
+        "GetMenuString",
+        "GetEventTags",
+        "GetLastMouseClickPointOnPage",
+        "GetToolName",
+        "GetSelectedObjects",
+        "GetSelectedPMItems",
+        "GetPMItemName",
+        "GetPMItemType",
+        "FindWindowEx",
+        "OpenWindow",
+        "CloseWindow",
+        "SetAppWindowAsParent",
+    }
+)
+_COMMAND_WORD = re.compile(r"(?:^|[\n;\[{])\s*((?:::)?[A-Za-z_][\w:]*)")
+
+
+def unsafe_commands(script: str) -> list[str]:
+    """Names from UNSAFE_COMMANDS used in command position in a Tcl script (a rough, conservative scan)."""
+    found = []
+    for m in _COMMAND_WORD.finditer(script):
+        word = m.group(1).rsplit("::", 1)[-1]
+        if word in UNSAFE_COMMANDS and word not in found:
+            found.append(word)
+    return found
+
+
 @tool(WRITE)
-def run_tcl(script: str, timeout_s: float | None = None) -> dict:
-    """Run a Tcl script in Capture's interpreter (Tcl 8.4: no {*}, dict, lassign, lmap) and return its result.
+def run_tcl(script: str, timeout_s: float | None = None, allow_unsafe: bool = False) -> dict:
+    """Run a Tcl script in Capture's interpreter (Tcl 8.4: no {*}, dict, lassign, lmap, min()/max() in expr)
+    and return its result.
 
     Gives full access to Capture's database API (DboSession, DboDesign, Dbo* classes; see Cadence's
     OrCAD_Capture_TclTk_Extensions.pdf) and Capture commands (Menu, PlaceWire, ...). Use only when no dedicated
     tool fits, and tell the user what the script changes. Disabled when ORCAD_MCP_ALLOW_TCL=0.
+
+    Refused when the script uses an undocumented Capture GUI command known to crash Capture (GetWindows,
+    GetActiveWindow, GetActivePage, ...) unless allow_unsafe=true. Never call a method on a Dbo result
+    without checking it for NULL (e.g. the net of an unconnected pin).
     """
     if not settings.allow_tcl:
         raise OrcadError("run_tcl is disabled (ORCAD_MCP_ALLOW_TCL=0)")
+    bad = unsafe_commands(script)
+    if bad and not allow_unsafe:
+        raise OrcadError(
+            f"run_tcl refused: {', '.join(bad)} can crash OrCAD Capture (undocumented GUI command). Use the "
+            "dedicated tools (active_page, goto_page, ...) or pass allow_unsafe=true after saving the design."
+        )
     return {"result": bridge.eval(script, timeout_s)}
 
 

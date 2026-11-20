@@ -12,7 +12,7 @@ from typing import Any
 
 from .config import Settings
 
-BRIDGE_VERSION = 1
+BRIDGE_VERSION = 2
 NEEDLIB = "ORCADMCP_NEEDLIB"
 
 _TCL_SPECIAL = set('\\[]{}$";# ')

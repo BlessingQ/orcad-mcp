@@ -13,6 +13,9 @@ client) read and edit **OrCAD Capture** schematics while Capture is running.
 - **BOM**: grouped by any properties, optionally written as CSV
 - **PADS netlist**: writes a PADS PowerPCB ASCII netlist (`.asc`) for PADS Layout, in the layout Capture's
   own PADS formatter uses
+- **Draw**: place parts, wires, off-page connectors, power/ground symbols, junctions and no-connect marks;
+  rename symbols; delete an area (listed first); move between pages
+- **Libraries**: add parts (rectangular body, any pin numbers such as `A5`/`SH1`) to a `.olb` without Capture
 - **Tcl escape hatch** (`run_tcl`): the complete Capture database API (`Dbo*`) and Capture commands
 
 ## How it works
@@ -104,7 +107,18 @@ to fetch a new release; the server updates the installed bridge script when it s
 | `save_design` | Save to the `.dsn` (backup to `%USERPROFILE%\.orcad-mcp\backups` first) |
 | `open_design` / `close_design` | Load a `.dsn` that is not open in Capture (no window) and unload it again |
 | `export_netlist` | PADS PowerPCB ASCII netlist (`.asc`) |
-| `run_tcl` | Run any Tcl in Capture |
+| `active_page` / `goto_page` | Which page Capture shows / show another page (View > Next/Previous Page) |
+| `page_objects` | Page geometry: parts with bounding box and pin coordinates, symbols, wires (optionally only an area) |
+| `place_part` | Place a library part and set reference, value, footprint; returns its pin coordinates |
+| `place_wire` | Wire through points |
+| `place_symbol` | Off-page connector, power or ground symbol with its connection point at (x, y) |
+| `place_marks` | Junctions or no-connect marks |
+| `delete_area` | Delete what touches a rectangle; lists first, deletes with `apply=true` |
+| `rename_symbol` | Rename a power/ground symbol or off-page connector |
+| `set_no_connect` | Set or clear the no-connect flag of pins |
+| `check_points` | Is a point a connection point, which nets end there |
+| `create_library_parts` | Add parts to a `.olb` through Cadence's Tcl shell (copy, check, back up, replace) |
+| `run_tcl` | Run any Tcl in Capture (refuses GUI commands known to crash Capture) |
 
 `design` arguments accept the `.dsn` path, the file name or a unique part of it; without it the design active
 in Capture's project manager is used.
@@ -129,6 +143,17 @@ Example prompts:
 - Write tools are marked destructive in the MCP tool annotations, so clients ask for approval.
 - `run_tcl` can do anything Capture's Tcl can (including starting programs). Disable it with
   `ORCAD_MCP_ALLOW_TCL=0`.
+- Two script mistakes crash Capture 16.5 with an access violation that Tcl `catch` cannot stop: calling a
+  method on a NULL database object (for example the net of an unconnected pin) and calling undocumented GUI
+  commands such as `GetWindows`, `GetActiveWindow`, `GetActivePage`. The bridge defines `::NULL` so the first
+  becomes an ordinary Tcl error; `run_tcl` refuses the second unless `allow_unsafe=true`. The drawing tools
+  only use commands whose signatures are known (the `Declare Sub` list and menu resources in `Capture.exe`).
+- The drawing tools work on the page Capture shows and check that first. `active_page` finds that page by
+  drawing a 0.2 mm marker wire in the page corner and deleting it again (the page is marked modified).
+- `delete_area` deletes nothing unless `apply=true`. Capture's area select takes everything that touches the
+  rectangle, including parts whose text reaches into it; the dry run lists exactly that.
+- `create_library_parts` never opens the original library: it edits a copy, reads it back, compares it with
+  the request and only then backs up and replaces the original. Restart Capture to see the new parts.
 - The bridge only accepts connections from `127.0.0.1` with the token; malformed requests (for example a web
   page posting to the port) are dropped without being evaluated.
 - Capture runs requests on its GUI thread. While a modal dialog is open in Capture, requests wait and time
@@ -158,9 +183,9 @@ orcad-mcp tcl "<script>"  run Tcl in Capture (or @file.tcl)
 
 ## Limitations / roadmap
 
-- Placing parts, drawing wires, net aliases and power symbols are not tools yet. Capture's user-action Tcl
-  commands (`PlacePart`, `PlaceWire`, ...) can be used through `run_tcl`; dedicated tools are planned once
-  their behaviour is verified.
+- Parts are placed unrotated (rotation 0); net aliases are not a tool (use off-page connectors).
+- `goto_page` moves within one schematic folder and needs a page of the design to be shown already.
+- New library parts get a rectangular body and passive pins.
 - Hierarchical designs with reused blocks (occurrence properties): parts are read per instance, not per
   occurrence.
 - PDF export is not included.

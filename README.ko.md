@@ -12,6 +12,8 @@ AI 어시스턴트(Claude Code, Claude Desktop 등 MCP 클라이언트)가 실�
 | 저장 | `.dsn` 저장(저장 전에 자동 백업) |
 | BOM | 원하는 속성으로 묶은 BOM, CSV 저장 |
 | PADS 넷리스트 | PADS Layout용 PADS PowerPCB ASCII 넷리스트(`.asc`), Capture의 PADS 포매터와 같은 형식 |
+| 그리기 | 부품·선·페이지 연결 커넥터·전원/GND 심볼·접점·NC 표시 배치, 심볼 이름 변경, 영역 삭제(먼저 목록 확인), 페이지 이동 |
+| 라이브러리 | Capture 없이 `.olb`에 부품 추가(사각형 몸체, `A5`·`SH1` 같은 핀 번호 가능) |
 | Tcl | `run_tcl`로 Capture 데이터베이스 API(`Dbo*`)와 Capture 명령 전체 사용 |
 
 ## 동작 방식
@@ -102,7 +104,18 @@ claude mcp add --scope user orcad -- uvx orcad-mcp
 | `save_design` | `.dsn` 저장 (먼저 `%USERPROFILE%\.orcad-mcp\backups`에 백업) |
 | `open_design` / `close_design` | Capture에 열려 있지 않은 `.dsn`을 창 없이 불러오기 / 닫기 |
 | `export_netlist` | PADS PowerPCB ASCII 넷리스트(`.asc`) |
-| `run_tcl` | Capture에서 임의 Tcl 실행 |
+| `active_page` / `goto_page` | Capture가 보여 주는 페이지 확인 / 다른 페이지로 이동(View > Next/Previous Page) |
+| `page_objects` | 페이지 구성: 부품(영역, 핀 좌표), 심볼, 선. 특정 영역만 볼 수 있음 |
+| `place_part` | 라이브러리 부품 배치 + 참조번호·Value·풋프린트 지정, 핀 좌표 반환 |
+| `place_wire` | 점들을 잇는 선 |
+| `place_symbol` | 페이지 연결 커넥터·전원·GND 심볼을 연결점 (x, y)에 배치 |
+| `place_marks` | 접점(Junction) 또는 NC 표시 |
+| `delete_area` | 사각형에 걸치는 것 삭제. 먼저 목록만, `apply=true`일 때 삭제 |
+| `rename_symbol` | 전원/GND 심볼·페이지 연결 커넥터 이름 변경 |
+| `set_no_connect` | 핀의 NC 표시 설정/해제 |
+| `check_points` | 좌표가 연결점인지, 거기서 끝나는 선의 넷 |
+| `create_library_parts` | Cadence Tcl로 `.olb`에 부품 추가(사본 수정 → 검증 → 백업 → 교체) |
+| `run_tcl` | Capture에서 임의 Tcl 실행 (Capture를 죽이는 GUI 명령은 거부) |
 
 `design` 인자는 `.dsn` 경로, 파일 이름, 또는 파일 이름의 일부(유일할 때)를 받습니다. 생략하면 Capture
 프로젝트 매니저에서 활성인 설계를 씁니다.
@@ -126,6 +139,17 @@ claude mcp add --scope user orcad -- uvx orcad-mcp
 - 쓰기 도구는 MCP 어노테이션에 destructive로 표시되어 클라이언트가 승인을 묻습니다.
 - `run_tcl`은 Capture Tcl이 할 수 있는 모든 일(프로그램 실행 포함)을 할 수 있습니다. `ORCAD_MCP_ALLOW_TCL=0`으로
   끌 수 있습니다.
+- Capture 16.5는 스크립트의 두 가지 실수로 접근 위반이 나면서 종료됩니다(Tcl `catch`로 못 막음). NULL인
+  데이터베이스 객체의 메서드 호출(예: 연결 안 된 핀의 넷 이름)과, 문서에 없는 GUI 명령(`GetWindows`,
+  `GetActiveWindow`, `GetActivePage` 등) 호출입니다. 브리지가 `::NULL`을 정의해 첫 번째는 일반 Tcl 오류가 되고,
+  두 번째는 `run_tcl`이 거부합니다(`allow_unsafe=true`로만 허용). 그리기 도구는 `Capture.exe` 안의
+  `Declare Sub` 목록과 메뉴 리소스로 형식이 확인된 명령만 씁니다.
+- 그리기 도구는 Capture가 보여 주는 페이지에 작동하며 먼저 그걸 확인합니다. `active_page`는 페이지 모서리에
+  0.2 mm 표시용 선을 그었다가 지워서 페이지를 알아냅니다(페이지가 수정됨으로 표시됨).
+- `delete_area`는 `apply=true`가 아니면 아무것도 지우지 않습니다. Capture의 영역 선택은 사각형에 걸치는 것을
+  모두 고르고(부품 글자가 걸쳐도 포함), 미리보기 목록이 정확히 그 기준입니다.
+- `create_library_parts`는 원본 라이브러리를 열지 않습니다. 사본을 고치고 다시 읽어 요청과 비교한 뒤에만
+  원본을 백업하고 교체합니다. 새 부품은 Capture를 다시 시작해야 보입니다.
 - 브리지는 `127.0.0.1`에서 토큰이 맞는 요청만 받습니다. 형식이 틀린 요청(예: 웹 페이지가 포트로 보낸 POST)은
   실행하지 않고 연결을 끊습니다.
 - Capture는 요청을 GUI 스레드에서 실행합니다. Capture에 모달 대화상자가 열려 있으면 요청이 기다리다가
@@ -155,8 +179,9 @@ orcad-mcp tcl "<스크립트>" Capture에서 Tcl 실행 (@file.tcl 가능)
 
 ## 한계 / 계획
 
-- 부품 배치, 배선, 넷 별칭, 전원 심볼은 아직 전용 도구가 없습니다. Capture의 사용자 동작 Tcl 명령
-  (`PlacePart`, `PlaceWire` 등)을 `run_tcl`로 쓸 수 있으며, 동작을 검증한 뒤 전용 도구로 만들 예정입니다.
+- 부품은 회전 없이(0도) 놓습니다. 넷 별칭 도구는 없습니다(페이지 연결 커넥터를 쓰세요).
+- `goto_page`는 한 회로도 폴더 안에서만 움직이며, 그 설계의 페이지가 이미 하나 열려 있어야 합니다.
+- 새 라이브러리 부품은 사각형 몸체와 passive 핀으로 만들어집니다.
 - 재사용 블록이 있는 계층 설계(occurrence 속성): 부품을 occurrence가 아닌 인스턴스 기준으로 읽습니다.
 - PDF 출력은 없습니다.
 - 포트 하나당 Capture 하나.

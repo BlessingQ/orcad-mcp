@@ -583,6 +583,574 @@ proc ::orcadmcp::c_close {spec discard} {
 }
 
 # ---------------------------------------------------------------------------------------------
+# Page editing
+# ---------------------------------------------------------------------------------------------
+# Capture's GUI commands (PlacePart, PlaceWire, ...) act on the schematic page shown in the active
+# window and take coordinates in that page's units: millimetres on a metric page, inches otherwise.
+# Everything here takes and reports database units (1/100 inch) and converts.
+#
+# Calls that crash Capture 16.5 with an access violation (Tcl catch cannot stop them):
+#  - a method called on a NULL object, e.g. [$pin GetNet $st] GetName $s on an unconnected pin
+#    (::NULL below turns that into a Tcl error);
+#  - undocumented GUI commands called without their arguments (GetWindows, GetActiveWindow, ...).
+# Only commands whose signatures are known are used: the "Declare Sub" list inside Capture.exe
+# (PlacePart x y lib pkg device convert, PlaceWire x1 y1 x2 y2, PlaceOffPage x y lib sym name, ...)
+# and menu command ids from its menu resources.
+
+namespace eval ::orcadmcp {
+    variable CMD_NEXT_PAGE 17751
+    variable CMD_PREV_PAGE 17752
+    variable CMD_FILE_SAVE 57603
+    # hotspot offset (dx dy) from the placement point, per CAPSYM symbol, rotation 0
+    variable symoffset
+    array set symoffset {
+        OFFPAGELEFT-L {0 10}
+        OFFPAGELEFT-R {10 10}
+        VCC_ARROW {10 10}
+        VCC_BAR {10 10}
+        VCC_CIRCLE {10 10}
+        GND {10 0}
+        GND_SIGNAL {10 0}
+        GND_POWER {10 0}
+        GND_EARTH {10 0}
+    }
+}
+
+if {[info commands ::NULL] eq ""} {
+    proc ::NULL {args} {
+        error "orcad-mcp: '[lindex $args 0]' called on a NULL object; check Dbo results for NULL before using them"
+    }
+}
+
+proc ::orcadmcp::pt {p} {
+    return [list [DboTclHelper_sGetCPointX $p] [DboTclHelper_sGetCPointY $p]]
+}
+
+proc ::orcadmcp::rect {r} {
+    return [concat [pt [DboTclHelper_sGetCRectTopLeft $r]] [pt [DboTclHelper_sGetCRectBottomRight $r]]]
+}
+
+proc ::orcadmcp::jpt {p} {
+    return [jarr [list [jnum [lindex $p 0]] [jnum [lindex $p 1]]]]
+}
+
+proc ::orcadmcp::jrect {r} {
+    set out {}
+    foreach v $r {
+        lappend out [jnum $v]
+    }
+    return [jarr $out]
+}
+
+proc ::orcadmcp::capsym {} {
+    set dir [file dirname [info nameofexecutable]]
+    foreach f [list [file join $dir library capsym.olb] [file join $dir .. capture library capsym.olb]] {
+        if {[file exists $f]} {
+            return [file nativename [file normalize $f]]
+        }
+    }
+    error "capsym.olb not found next to [info nameofexecutable]; pass the symbol library explicitly"
+}
+
+proc ::orcadmcp::pagenum {pg} {
+    set st [DboState]
+    set n [$pg GetPageNumber $st]
+    $st -delete
+    return $n
+}
+
+# GUI coordinate (mm or inch) of a database coordinate on page pg
+proc ::orcadmcp::gu {pg v} {
+    if {[$pg GetIsMetric]} {
+        return [format %.4f [expr {$v * 0.254}]]
+    }
+    return [format %.4f [expr {$v / 100.0}]]
+}
+
+# {schematic page pageObj} for a page name ("RS485") or "schematic/page"
+proc ::orcadmcp::find_page {d name} {
+    set hits {}
+    foreach {sname pname pg} [pages $d] {
+        if {[string equal -nocase $pname $name] || [string equal -nocase "$sname/$pname" $name]} {
+            lappend hits $sname $pname $pg
+        }
+    }
+    if {[llength $hits] == 0} {
+        set names {}
+        foreach {sname pname pg} [pages $d] {
+            lappend names $pname
+        }
+        error "page '$name' not found. Pages: [join $names {, }]"
+    }
+    if {[llength $hits] > 3} {
+        error "page name '$name' is in several schematic folders; use schematic/page"
+    }
+    return $hits
+}
+
+# Wires of a page: {wireObj start end netName} ...
+proc ::orcadmcp::page_wires {pg} {
+    set st [DboState]
+    set out {}
+    set it [$pg NewWiresIter $st]
+    set w [$it NextWire $st]
+    while {$w ne "NULL"} {
+        set n [DboTclHelper_sMakeCString]
+        catch {$w GetNetName $n}
+        lappend out $w [pt [$w GetStartPoint $st]] [pt [$w GetEndPoint $st]] [DboTclHelper_sGetConstCharPtr $n]
+        set w [$it NextWire $st]
+    }
+    delete_DboPageWiresIter $it
+    $st -delete
+    return $out
+}
+
+proc ::orcadmcp::near {a b} {
+    return [expr {abs([lindex $a 0] - [lindex $b 0]) <= 1 && abs([lindex $a 1] - [lindex $b 1]) <= 1}]
+}
+
+# The page shown in the active window, as {design schematic page pageObj}, or {} when the active window
+# is not a schematic page. Places a short marker wire in the page corner (0.508,0.508)-(2.54,0.508)
+# (millimetres or inches, whatever the page uses), finds the page that received it and deletes it again.
+proc ::orcadmcp::active_page {} {
+    catch {UnSelectAll}
+    PlaceWire 0.508 0.508 2.54 0.508
+    catch {UnSelectAll}
+    set marks {}
+    foreach d [designs] {
+        foreach {sname pname pg} [pages $d] {
+            if {[$pg GetIsMetric]} {
+                set a {2 2}
+                set b {10 2}
+            } else {
+                set a {51 51}
+                set b {254 51}
+            }
+            foreach {w p1 p2 net} [page_wires $pg] {
+                if {([near $p1 $a] && [near $p2 $b]) || ([near $p1 $b] && [near $p2 $a])} {
+                    lappend marks $d $sname $pname $pg $w
+                }
+            }
+        }
+    }
+    foreach {d sname pname pg w} $marks {
+        catch {$pg DeleteWire $w}
+    }
+    redraw
+    if {[llength $marks] == 0} {
+        return {}
+    }
+    return [lrange $marks 0 3]
+}
+
+# Error unless pg is the page in the active window.
+proc ::orcadmcp::require_active {d pg pname} {
+    set cur [active_page]
+    if {[llength $cur] == 0} {
+        error "No schematic page is shown in Capture's active window. Open page $pname (or call goto_page)."
+    }
+    if {[lindex $cur 3] ne $pg} {
+        error "Capture shows page [lindex $cur 2], not $pname. Call goto_page first."
+    }
+}
+
+proc ::orcadmcp::inst_set {pg} {
+    set st [DboState]
+    set out {}
+    set it [$pg NewPartInstsIter $st]
+    set i [$it NextPartInst $st]
+    while {$i ne "NULL"} {
+        set p [DboPartInstToDboPlacedInst $i]
+        if {$p ne "NULL"} {
+            lappend out $p
+        }
+        set i [$it NextPartInst $st]
+    }
+    delete_DboPagePartInstsIter $it
+    $st -delete
+    return $out
+}
+
+proc ::orcadmcp::jpins {p} {
+    set st [DboState]
+    set out {}
+    set it [$p NewPinsIter $st]
+    set pin [$it NextPin $st]
+    while {$pin ne "NULL"} {
+        lappend out [jobj number [js [getstr $pin GetPinNumber]] name [js [getstr $pin GetPinName]] \
+            at [jpt [pt [$pin GetOffsetHotSpot $st]]] no_connect [jbool [$pin GetIsNoConnect $st]]]
+        set pin [$it NextPin $st]
+    }
+    delete_DboPartInstPinsIter $it
+    $st -delete
+    return [jarr $out]
+}
+
+proc ::orcadmcp::symbols {pg} {
+    set st [DboState]
+    set out {}
+    set it [$pg NewGlobalsIter $st]
+    set g [$it NextGlobal $st]
+    while {$g ne "NULL"} {
+        lappend out global $g [getstr $g GetName] [pt [$g GetLocation $st]] [$g GetRotation $st] \
+            [rect [$g GetBoundingBox]]
+        set g [$it NextGlobal $st]
+    }
+    delete_DboPageGlobalsIter $it
+    set it [$pg NewOffPageConnectorsIter $st]
+    set o [$it NextOffPageConnector $st]
+    while {$o ne "NULL"} {
+        lappend out offpage $o [getstr $o GetName] [pt [$o GetLocation $st]] [$o GetRotation $st] \
+            [rect [$o GetBoundingBox]]
+        set o [$it NextOffPageConnector $st]
+    }
+    delete_DboPageOffPageConnectorsIter $it
+    $st -delete
+    return $out
+}
+
+proc ::orcadmcp::overlaps {r x1 y1 x2 y2} {
+    foreach {a b c e} $r break
+    return [expr {$c >= $x1 && $a <= $x2 && $e >= $y1 && $b <= $y2}]
+}
+
+proc ::orcadmcp::c_active_page {} {
+    set cur [active_page]
+    if {[llength $cur] == 0} {
+        return [jobj design null schematic null page null]
+    }
+    foreach {d sname pname pg} $cur break
+    return [jobj design [js [getstr $d GetName]] schematic [js $sname] page [js $pname] \
+        number [jnum [pagenum $pg]] metric [jbool [$pg GetIsMetric]]]
+}
+
+# Move Capture's active window to another page of the same schematic folder with View > Next Page /
+# Previous Page (F10 / Shift+F10), which follow the page numbers.
+proc ::orcadmcp::c_goto_page {spec name} {
+    variable CMD_NEXT_PAGE
+    variable CMD_PREV_PAGE
+    set d [design $spec]
+    foreach {tsname tpname tpg} [find_page $d $name] break
+    set cur [active_page]
+    if {[llength $cur] == 0} {
+        error "Open any schematic page of [file tail [getstr $d GetName]] in Capture first; goto_page steps from the page that is shown."
+    }
+    foreach {cd csname cpname cpg} $cur break
+    if {$cd ne $d} {
+        error "Capture shows a page of [file tail [getstr $cd GetName]]; open a page of [file tail [getstr $d GetName]] first."
+    }
+    if {$csname ne $tsname} {
+        error "goto_page moves within one schematic folder ($csname -> $tsname is not supported)"
+    }
+    set diff [expr {[pagenum $tpg] - [pagenum $cpg]}]
+    set cmd [expr {$diff > 0 ? $CMD_NEXT_PAGE : $CMD_PREV_PAGE}]
+    for {set i 0} {$i < abs($diff)} {incr i} {
+        if {[catch {MenuCommand $cmd} err]} {
+            error "Capture refused page step [expr {$i + 1}] of [expr {abs($diff)}]: $err"
+        }
+    }
+    set now [active_page]
+    set shown ""
+    if {[llength $now]} {
+        set shown [lindex $now 2]
+    }
+    return [jobj design [js [getstr $d GetName]] from [js $cpname] page [js $shown] steps $diff \
+        ok [jbool [string equal $shown $tpname]]]
+}
+
+proc ::orcadmcp::c_page_objects {spec name} {
+    set d [design $spec]
+    foreach {sname pname pg} [find_page $d $name] break
+    set st [DboState]
+    set parts {}
+    foreach p [inst_set $pg] {
+        lappend parts [jobj refdes [js [getstr $p GetReferenceDesignator]] part [js [getstr $p GetSourcePartName]] \
+            location [jpt [pt [$p GetLocation $st]]] rotation [jnum [$p GetRotation $st]] \
+            bbox [jrect [rect [$p GetBoundingBox]]] pins [jpins $p]]
+    }
+    set syms {}
+    foreach {kind o sn loc rot bb} [symbols $pg] {
+        lappend syms [jobj kind [js $kind] name [js $sn] location [jpt $loc] rotation [jnum $rot] bbox [jrect $bb]]
+    }
+    set wires {}
+    foreach {w p1 p2 net} [page_wires $pg] {
+        lappend wires [jobj net [js $net] start [jpt $p1] end [jpt $p2]]
+    }
+    set w ""
+    set h ""
+    if {[catch {set w [$pg GetPageWidth]}]} {
+        catch {set w [$pg GetPageWidth $st]}
+    }
+    if {[catch {set h [$pg GetPageHeight]}]} {
+        catch {set h [$pg GetPageHeight $st]}
+    }
+    $st -delete
+    return [jobj design [js [getstr $d GetName]] schematic [js $sname] page [js $pname] \
+        number [jnum [pagenum $pg]] metric [jbool [$pg GetIsMetric]] \
+        size [jarr [list [jnum $w] [jnum $h]]] \
+        parts [jarr $parts] symbols [jarr $syms] wires [jarr $wires]]
+}
+
+# Place a library part with its placement point at (x y); set reference, value and footprint.
+proc ::orcadmcp::c_place_part {spec name lib part x y ref value footprint} {
+    set d [design $spec]
+    foreach {sname pname pg} [find_page $d $name] break
+    require_active $d $pg $pname
+    set before [inst_set $pg]
+    PlacePart [gu $pg $x] [gu $pg $y] $lib $part "" 0
+    catch {UnSelectAll}
+    set new {}
+    foreach p [inst_set $pg] {
+        if {[lsearch -exact $before $p] < 0} {
+            lappend new $p
+        }
+    }
+    if {[llength $new] != 1} {
+        error "Capture did not place '$part' from $lib (is the library path and part name right?)"
+    }
+    set p [lindex $new 0]
+    if {$ref ne ""} {
+        set_prop $p "Part Reference" $ref
+    }
+    if {$value ne ""} {
+        set_prop $p "Value" $value
+    }
+    if {$footprint ne ""} {
+        set_prop $p "PCB Footprint" $footprint
+    }
+    set st [DboState]
+    set loc [pt [$p GetLocation $st]]
+    $st -delete
+    return [jobj refdes [js [getstr $p GetReferenceDesignator]] page [js $pname] location [jpt $loc] \
+        pins [jpins $p]]
+}
+
+# points: {x y} ...  -> one wire per segment
+proc ::orcadmcp::c_place_wire {spec name points} {
+    set d [design $spec]
+    foreach {sname pname pg} [find_page $d $name] break
+    if {[llength $points] < 2} {
+        error "a wire needs at least two points"
+    }
+    require_active $d $pg $pname
+    for {set i 1} {$i < [llength $points]} {incr i} {
+        set a [lindex $points [expr {$i - 1}]]
+        set b [lindex $points $i]
+        if {[lindex $a 0] != [lindex $b 0] && [lindex $a 1] != [lindex $b 1]} {
+            error "segment $a -> $b is not horizontal or vertical"
+        }
+        PlaceWire [gu $pg [lindex $a 0]] [gu $pg [lindex $a 1]] [gu $pg [lindex $b 0]] [gu $pg [lindex $b 1]]
+    }
+    catch {UnSelectAll}
+    set nets {}
+    foreach {w p1 p2 net} [page_wires $pg] {
+        foreach q $points {
+            if {[near $p1 $q] || [near $p2 $q]} {
+                if {[lsearch -exact $nets $net] < 0} {
+                    lappend nets $net
+                }
+            }
+        }
+    }
+    set st [DboState]
+    set first [$pg IsConnectionPoint [DboTclHelper_sMakeCPoint [lindex [lindex $points 0] 0] [lindex [lindex $points 0] 1]] $st]
+    set last [$pg IsConnectionPoint [DboTclHelper_sMakeCPoint [lindex [lindex $points end] 0] [lindex [lindex $points end] 1]] $st]
+    $st -delete
+    return [jobj page [js $pname] segments [expr {[llength $points] - 1}] nets [jstrs $nets] \
+        ends_connected [jarr [list [jbool $first] [jbool $last]]]]
+}
+
+# kind: offpage | power | ground. (x y) is the connection point (hotspot).
+proc ::orcadmcp::c_place_symbol {spec name kind netname x y symbol lib offset} {
+    variable symoffset
+    set d [design $spec]
+    foreach {sname pname pg} [find_page $d $name] break
+    if {$lib eq ""} {
+        set lib [capsym]
+    }
+    if {$offset eq ""} {
+        if {![info exists symoffset([string toupper $symbol])]} {
+            error "unknown hotspot offset for symbol '$symbol'; pass offset"
+        }
+        set offset $symoffset([string toupper $symbol])
+    }
+    switch -- $kind {
+        offpage {set cmd PlaceOffPage}
+        power {set cmd PlacePower}
+        ground {set cmd PlaceGround}
+        default {error "kind must be offpage, power or ground"}
+    }
+    require_active $d $pg $pname
+    set lx [expr {$x - [lindex $offset 0]}]
+    set ly [expr {$y - [lindex $offset 1]}]
+    $cmd [gu $pg $lx] [gu $pg $ly] $lib $symbol $netname
+    catch {UnSelectAll}
+    set st [DboState]
+    set conn [$pg IsConnectionPoint [DboTclHelper_sMakeCPoint $x $y] $st]
+    $st -delete
+    set net ""
+    foreach {w p1 p2 n} [page_wires $pg] {
+        if {[near $p1 [list $x $y]] || [near $p2 [list $x $y]]} {
+            set net $n
+        }
+    }
+    return [jobj page [js $pname] kind [js $kind] name [js $netname] at [jpt [list $x $y]] \
+        connected [jbool $conn] wire_net [js $net]]
+}
+
+# kind: junction | no_connect
+proc ::orcadmcp::c_place_marks {spec name kind points} {
+    set d [design $spec]
+    foreach {sname pname pg} [find_page $d $name] break
+    switch -- $kind {
+        junction {set cmd PlaceJunction}
+        no_connect {set cmd PlaceNoConnect}
+        default {error "kind must be junction or no_connect"}
+    }
+    require_active $d $pg $pname
+    foreach q $points {
+        $cmd [gu $pg [lindex $q 0]] [gu $pg [lindex $q 1]]
+    }
+    catch {UnSelectAll}
+    return [jobj page [js $pname] kind [js $kind] count [llength $points]]
+}
+
+# Objects whose bounding box (or wire) touches the area. Capture's area select picks exactly these
+# (it selects intersecting objects, not only enclosed ones).
+proc ::orcadmcp::area_objects {pg x1 y1 x2 y2} {
+    set st [DboState]
+    set out {}
+    foreach p [inst_set $pg] {
+        if {[overlaps [rect [$p GetBoundingBox]] $x1 $y1 $x2 $y2]} {
+            lappend out [jobj type [js part] name [js [getstr $p GetReferenceDesignator]]]
+        }
+    }
+    foreach {kind o sn loc rot bb} [symbols $pg] {
+        if {[overlaps $bb $x1 $y1 $x2 $y2]} {
+            lappend out [jobj type [js $kind] name [js $sn] location [jpt $loc]]
+        }
+    }
+    foreach {w p1 p2 net} [page_wires $pg] {
+        set xs [lsort -integer [list [lindex $p1 0] [lindex $p2 0]]]
+        set ys [lsort -integer [list [lindex $p1 1] [lindex $p2 1]]]
+        set r [list [lindex $xs 0] [lindex $ys 0] [lindex $xs 1] [lindex $ys 1]]
+        if {[overlaps $r $x1 $y1 $x2 $y2]} {
+            lappend out [jobj type [js wire] name [js $net] start [jpt $p1] end [jpt $p2]]
+        }
+    }
+    $st -delete
+    return $out
+}
+
+proc ::orcadmcp::c_delete_area {spec name x1 y1 x2 y2 apply} {
+    set d [design $spec]
+    foreach {sname pname pg} [find_page $d $name] break
+    set hit [area_objects $pg $x1 $y1 $x2 $y2]
+    if {$apply && [llength $hit]} {
+        require_active $d $pg $pname
+        catch {UnSelectAll}
+        SelectBlock [gu $pg $x1] [gu $pg $y1] [gu $pg $x2] [gu $pg $y2] 0
+        Delete
+        catch {UnSelectAll}
+    }
+    set left [area_objects $pg $x1 $y1 $x2 $y2]
+    return [jobj page [js $pname] applied [jbool $apply] objects [jarr $hit] remaining [jarr $left]]
+}
+
+# Rename the power/ground symbol or off-page connector whose bounding box contains (x y).
+proc ::orcadmcp::c_rename_symbol {spec name x y newname} {
+    set d [design $spec]
+    foreach {sname pname pg} [find_page $d $name] break
+    set hits {}
+    foreach {kind o sn loc rot bb} [symbols $pg] {
+        foreach {a b c e} $bb break
+        if {$x >= $a && $x <= $c && $y >= $b && $y <= $e} {
+            lappend hits $kind $o $sn $loc
+        }
+    }
+    if {[llength $hits] != 4} {
+        error "expected exactly one symbol at ($x $y), found [expr {[llength $hits] / 4}]"
+    }
+    foreach {kind o old loc} $hits break
+    require_active $d $pg $pname
+    catch {UnSelectAll}
+    SelectObject [gu $pg $x] [gu $pg $y] 0
+    set code [catch {SetProperty "Name" $newname} err]
+    catch {UnSelectAll}
+    if {$code} {
+        error "Capture refused the rename: $err"
+    }
+    # Capture replaces the object when it is renamed: look it up again by kind and location
+    set now ""
+    foreach {k2 o2 sn2 loc2 rot2 bb2} [symbols $pg] {
+        if {$k2 eq $kind && $loc2 eq $loc} {
+            set now $sn2
+        }
+    }
+    return [jobj page [js $pname] kind [js $kind] location [jpt $loc] old [js $old] new [js $now] \
+        ok [jbool [string equal $now $newname]]]
+}
+
+# Clear (or set) the no-connect flag of pins in the database.
+proc ::orcadmcp::c_set_no_connect {spec ref pins flag} {
+    set d [design $spec]
+    set found [find_parts $d $ref]
+    if {[llength $found] == 0} {
+        error "part '$ref' not found"
+    }
+    set st [DboState]
+    set done {}
+    foreach {sname pname p} $found {
+        set it [$p NewPinsIter $st]
+        set pin [$it NextPin $st]
+        while {$pin ne "NULL"} {
+            set num [getstr $pin GetPinNumber]
+            if {[lsearch -exact $pins $num] >= 0 || [lsearch -exact $pins [getstr $pin GetPinName]] >= 0} {
+                $pin SetIsNoConnect $flag
+                lappend done [jobj pin [js $num] no_connect [jbool [$pin GetIsNoConnect $st]]]
+            }
+            set pin [$it NextPin $st]
+        }
+        delete_DboPartInstPinsIter $it
+    }
+    $st -delete
+    redraw
+    return [jobj refdes [js $ref] pins [jarr $done]]
+}
+
+proc ::orcadmcp::c_check_points {spec name points} {
+    set d [design $spec]
+    foreach {sname pname pg} [find_page $d $name] break
+    set st [DboState]
+    set out {}
+    set wires [page_wires $pg]
+    foreach q $points {
+        set c [$pg IsConnectionPoint [DboTclHelper_sMakeCPoint [lindex $q 0] [lindex $q 1]] $st]
+        set nets {}
+        foreach {w p1 p2 net} $wires {
+            if {([near $p1 $q] || [near $p2 $q]) && [lsearch -exact $nets $net] < 0} {
+                lappend nets $net
+            }
+        }
+        lappend out [jobj at [jpt $q] connection_point [jbool $c] wire_nets [jstrs $nets]]
+    }
+    $st -delete
+    return [jobj page [js $pname] points [jarr $out]]
+}
+
+# Save through Capture's File > Save (menu command, like Ctrl+S) on the page that is shown.
+proc ::orcadmcp::c_save_gui {spec} {
+    variable CMD_FILE_SAVE
+    set d [design $spec]
+    set cur [active_page]
+    if {[llength $cur] == 0 || [lindex $cur 0] ne $d} {
+        error "File > Save needs a page of [file tail [getstr $d GetName]] in the active window"
+    }
+    MenuCommand $CMD_FILE_SAVE
+    return [jobj path [js [getstr $d GetName]] saved true]
+}
+
+# ---------------------------------------------------------------------------------------------
 
 proc ::orcadmcp::call {cmd args} {
     if {[info commands ::orcadmcp::c_$cmd] eq ""} {

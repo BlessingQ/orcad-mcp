@@ -15,13 +15,22 @@
 # A malformed header or a wrong token closes the connection.
 
 namespace eval ::orcadmcp::bridge {
-    variable version 1
+    variable version 2
     variable port 47800
     variable server ""
     variable token ""
     variable busy 0
     variable buf
     array set buf {}
+}
+
+# Capture 16.5 crashes (access violation, Tcl catch cannot stop it) when a method is called on a NULL
+# Dbo object, e.g. [$pin GetNet $st] GetName $s for an unconnected pin: the word "NULL" is resolved as a
+# null object. A real ::NULL command turns that mistake into an ordinary Tcl error.
+if {[info commands ::NULL] eq ""} {
+    proc ::NULL {args} {
+        error "orcad-mcp: '[lindex $args 0]' called on a NULL object; check Dbo results for NULL before using them"
+    }
 }
 
 proc ::orcadmcp::bridge::home {} {
