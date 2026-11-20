@@ -62,8 +62,15 @@ settings = Settings.from_env()
 bridge = Bridge(settings)
 mcp = MCPServer(name="orcad", instructions=INSTRUCTIONS, version=__version__, log_level=settings.log_level)
 
+# MCP meaning: destructiveHint=true "may perform destructive updates", false "performs only additive updates".
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+# changes what Capture shows or loads, or writes a new output file; the design is not changed
 CONTROL = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+# adds objects (parts, wires, symbols, library parts) without changing or removing existing ones
+ADD = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False)
+# overwrites existing values; repeating the same call gives the same result
+UPDATE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False)
+# deletes, overwrites files or runs arbitrary code
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 
 
@@ -136,7 +143,7 @@ def orcad_status() -> dict:
     return status
 
 
-@tool(WRITE)
+@tool(ADD)
 def install_bridge(cdsroot: str | None = None) -> dict:
     """Install the Capture-side bridge so it starts with Capture (once per PC).
 
@@ -305,7 +312,7 @@ class PropertyChange(BaseModel):
     value: str = Field(description="New value (text)")
 
 
-@tool(WRITE)
+@tool(UPDATE)
 def set_part_properties(changes: list[PropertyChange], design: str | None = None) -> dict:
     """Set part properties (Value, PCB Footprint, Part Reference, user properties ...) in Capture.
 
@@ -388,7 +395,7 @@ def page_objects(page: str, design: str | None = None, area: list[int] | None = 
     return data
 
 
-@tool(WRITE)
+@tool(ADD)
 def place_part(
     page: str,
     library: str,
@@ -420,7 +427,7 @@ def place_part(
     )
 
 
-@tool(WRITE)
+@tool(ADD)
 def place_wire(page: str, points: list[Point], design: str | None = None) -> dict:
     """Draw a wire through points [[x, y], ...] (horizontal or vertical segments) on the page shown.
 
@@ -431,7 +438,7 @@ def place_wire(page: str, points: list[Point], design: str | None = None) -> dic
     return bridge.call("place_wire", _spec(design), page.strip(), _points(points))
 
 
-@tool(WRITE)
+@tool(ADD)
 def place_symbol(
     page: str,
     kind: Literal["offpage", "power", "ground"],
@@ -469,7 +476,7 @@ def place_symbol(
     )
 
 
-@tool(WRITE)
+@tool(ADD)
 def place_marks(
     page: str, kind: Literal["junction", "no_connect"], points: list[Point], design: str | None = None
 ) -> dict:
@@ -489,14 +496,14 @@ def delete_area(page: str, x1: int, y1: int, x2: int, y2: int, apply: bool = Fal
     return bridge.call("delete_area", _spec(design), page.strip(), int(x1), int(y1), int(x2), int(y2), bool(apply))
 
 
-@tool(WRITE)
+@tool(UPDATE)
 def rename_symbol(page: str, x: int, y: int, name: str, design: str | None = None) -> dict:
     """Rename the power/ground symbol or off-page connector whose bounding box contains (x, y) on the page
     shown (this moves it to another net)."""
     return bridge.call("rename_symbol", _spec(design), page.strip(), int(x), int(y), name)
 
 
-@tool(WRITE)
+@tool(UPDATE)
 def set_no_connect(refdes: str, pins: list[str], no_connect: bool, design: str | None = None) -> dict:
     """Set or clear the no-connect flag of pins (numbers or names) of a part, directly in the database
     (no page needs to be shown). Clear it when wiring a pin that was marked unused."""
@@ -538,7 +545,7 @@ class LibPart(BaseModel):
     )
 
 
-@tool(WRITE)
+@tool(ADD)
 def create_library_parts(library: str, parts: list[LibPart]) -> dict:
     """Add new parts to an OrCAD library (.olb), all pins passive, with a rectangular body.
 

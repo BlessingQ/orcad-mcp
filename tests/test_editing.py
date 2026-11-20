@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -186,3 +187,25 @@ def test_check_reports_differences():
     listing["parts"][0]["pins"][2]["hot"] = [50, 80]
     problems = libedit.check([PART], listing)
     assert any("pin numbers" in p for p in problems) and any("pin SH" in p for p in problems)
+
+
+def test_tool_annotations():
+    """destructiveHint only for tools that delete or overwrite (MCP: false = only additive updates)."""
+    tools = asyncio.run(server.mcp.list_tools())
+    kinds = {}
+    for t in tools:
+        a = t.annotations
+        kinds[t.name] = "read" if a.read_only_hint else ("destructive" if a.destructive_hint else "additive")
+    destructive = {n for n, k in kinds.items() if k == "destructive"}
+    assert destructive == {
+        "set_part_properties",
+        "delete_area",
+        "rename_symbol",
+        "set_no_connect",
+        "save_design",
+        "run_tcl",
+    }
+    for name in ("place_part", "place_wire", "place_symbol", "place_marks", "create_library_parts"):
+        assert kinds[name] == "additive"
+    for name in ("list_parts", "page_objects", "check_points", "orcad_status"):
+        assert kinds[name] == "read"

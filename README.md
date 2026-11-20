@@ -142,7 +142,10 @@ Example prompts:
   are kept). Capture also writes its usual `_0.DBK` backup. Its result says whether the file was rewritten
   (`file_written`). Capture's window may keep its `*` (modified) mark: no scripted save clears it (saving through
   the database, or File > Save by menu id or menu path), although the file is saved; Ctrl+S in Capture clears it.
-- Write tools are marked destructive in the MCP tool annotations, so clients ask for approval.
+- MCP tool annotations: reading tools are read-only; tools that only add objects (`place_*`,
+  `create_library_parts`) or change what Capture shows (`goto_page`) are non-destructive; tools that delete or
+  overwrite (`delete_area`, `save_design`, `set_part_properties`, `rename_symbol`, `set_no_connect`, `run_tcl`)
+  are marked destructive, so clients can ask for approval.
 - `run_tcl` can do anything Capture's Tcl can (including starting programs). Disable it with
   `ORCAD_MCP_ALLOW_TCL=0`.
 - Two script mistakes crash Capture 16.5 with an access violation that Tcl `catch` cannot stop: calling a

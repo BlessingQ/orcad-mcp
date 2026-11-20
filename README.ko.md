@@ -138,7 +138,9 @@ claude mcp add --scope user orcad -- uvx orcad-mcp
   유지). Capture도 평소처럼 `_0.DBK` 백업을 만듭니다. 결과의 `file_written`으로 파일이 실제로 다시 쓰였는지 알 수
   있습니다. 저장 후에도 Capture 창의 `*`(수정됨) 표시는 남을 수 있습니다. 데이터베이스 저장, 메뉴 ID·메뉴 경로로
   부른 File > Save 모두 파일은 저장하지만 `*`는 지우지 못했습니다. Capture에서 Ctrl+S를 누르면 지워집니다.
-- 쓰기 도구는 MCP 어노테이션에 destructive로 표시되어 클라이언트가 승인을 묻습니다.
+- MCP 어노테이션: 읽기 도구는 read-only, 물체를 추가만 하는 도구(`place_*`, `create_library_parts`)와 화면만 바꾸는
+  도구(`goto_page`)는 비파괴, 지우거나 덮어쓰는 도구(`delete_area`, `save_design`, `set_part_properties`,
+  `rename_symbol`, `set_no_connect`, `run_tcl`)만 destructive로 표시되어 클라이언트가 승인을 물을 수 있습니다.
 - `run_tcl`은 Capture Tcl이 할 수 있는 모든 일(프로그램 실행 포함)을 할 수 있습니다. `ORCAD_MCP_ALLOW_TCL=0`으로
   끌 수 있습니다.
 - Capture 16.5는 스크립트의 두 가지 실수로 접근 위반이 나면서 종료됩니다(Tcl `catch`로 못 막음). NULL인
