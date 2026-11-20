@@ -26,7 +26,9 @@ proc ::orcadmcp_autoload {} {
     if {$f ne "" && [file exists $f]} {
         uplevel #0 [list source $f]
     }
+    return ""
 }
+# empty after a successful start, otherwise the error message
 if {[catch {::orcadmcp_autoload} ::orcadmcp_autoload_error]} {
     catch {puts "orcad-mcp: $::orcadmcp_autoload_error"}
 }
