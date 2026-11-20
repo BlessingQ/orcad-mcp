@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from . import install as installer
-from .bridge import BRIDGE_VERSION, Bridge, BridgeError, OrcadError, TclError
+from .bridge import BRIDGE_VERSION, Bridge, BridgeError, OrcadError
 from .config import Settings
 from .netlist import (
     bom_csv,
@@ -575,17 +575,17 @@ def save_design(design: str | None = None) -> dict:
     """Save the design to its .dsn file. The current .dsn is copied to %USERPROFILE%\\.orcad-mcp\\backups
     first. Ask the user before saving.
 
-    When a page of the design is shown, Capture's File > Save is used (like Ctrl+S, "via": "menu"); otherwise
-    the design is saved through the database ("via": "database").
+    "file_written" tells whether the .dsn on disk was rewritten. Capture's window may keep showing its "*"
+    (modified) mark afterwards: no scripted save clears it (database save, File > Save by menu id or by menu
+    path were all tried); the file is saved anyway, and Ctrl+S in Capture clears the mark.
     """
     info = bridge.call("resolve", _spec(design))
-    backup = _backup(Path(info["path"]))
-    try:
-        result = bridge.call("save_gui", info["path"])
-        result["via"] = "menu"
-    except TclError:
-        result = bridge.call("save", info["path"])
-        result["via"] = "database"
+    dsn = Path(info["path"])
+    backup = _backup(dsn)
+    before = dsn.stat().st_mtime_ns if dsn.is_file() else None
+    result = bridge.call("save", info["path"])
+    after = dsn.stat().st_mtime_ns if dsn.is_file() else None
+    result["file_written"] = after is not None and after != before
     result["had_unsaved_changes"] = info["modified"]
     result["backup"] = backup
     return result

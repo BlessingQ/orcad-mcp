@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
 from orcad_mcp import libedit, server
-from orcad_mcp.bridge import TclError, tcl_quote
+from orcad_mcp.bridge import tcl_quote
 
 
 @pytest.fixture
@@ -106,23 +108,27 @@ def test_set_no_connect(calls):
         server.set_no_connect("U2", [], True)
 
 
-def test_save_falls_back_to_database(tmp_path, monkeypatch):
+def test_save_reports_whether_the_file_was_written(tmp_path, monkeypatch):
     dsn = tmp_path / "B.DSN"
     dsn.write_bytes(b"x")
     monkeypatch.setattr(server.settings, "home", tmp_path / "home")
     seen = []
+    rewrite = {"on": True}
 
     def call(command, *args, timeout=None):
         seen.append(command)
         if command == "resolve":
-            return {"path": str(dsn), "modified": False}
-        if command == "save_gui":
-            raise TclError("no page of the design is shown")
+            return {"path": str(dsn), "modified": True}
+        if rewrite["on"]:
+            dsn.write_bytes(b"saved")
+            os.utime(dsn, ns=(dsn.stat().st_atime_ns, dsn.stat().st_mtime_ns + 10_000_000))
         return {"path": args[0], "saved": True}
 
     monkeypatch.setattr(server.bridge, "call", call)
-    r = server.save_design()
-    assert r["via"] == "database" and seen == ["resolve", "save_gui", "save"]
+    assert server.save_design()["file_written"] is True
+    assert seen == ["resolve", "save"]
+    rewrite["on"] = False
+    assert server.save_design()["file_written"] is False
 
 
 # --- library builder -------------------------------------------------------------------------------

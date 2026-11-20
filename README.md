@@ -139,7 +139,9 @@ Example prompts:
   redraw the active page); the `.dsn` file only changes with `save_design`. Capture's **Edit > Undo does not cover these changes**: the
   tool returns the old values, so the assistant can set them back.
 - `save_design` copies the current `.dsn` to `%USERPROFILE%\.orcad-mcp\backups\<design>\` first (the last 20
-  are kept). Capture also writes its usual `_0.DBK` backup.
+  are kept). Capture also writes its usual `_0.DBK` backup. Its result says whether the file was rewritten
+  (`file_written`). Capture's window may keep its `*` (modified) mark: no scripted save clears it (saving through
+  the database, or File > Save by menu id or menu path), although the file is saved; Ctrl+S in Capture clears it.
 - Write tools are marked destructive in the MCP tool annotations, so clients ask for approval.
 - `run_tcl` can do anything Capture's Tcl can (including starting programs). Disable it with
   `ORCAD_MCP_ALLOW_TCL=0`.

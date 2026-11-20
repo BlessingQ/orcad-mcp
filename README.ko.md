@@ -135,7 +135,9 @@ claude mcp add --scope user orcad -- uvx orcad-mcp
   `save_design`을 해야 바뀝니다. **Capture의 Edit > Undo로는 되돌릴 수 없으므로**, 도구 결과에 이전 값이
   들어 있어 AI가 다시 설정해 되돌릴 수 있습니다.
 - `save_design`은 저장 전에 현재 `.dsn`을 `%USERPROFILE%\.orcad-mcp\backups\<설계>\`에 복사합니다(최근 20개
-  유지). Capture도 평소처럼 `_0.DBK` 백업을 만듭니다.
+  유지). Capture도 평소처럼 `_0.DBK` 백업을 만듭니다. 결과의 `file_written`으로 파일이 실제로 다시 쓰였는지 알 수
+  있습니다. 저장 후에도 Capture 창의 `*`(수정됨) 표시는 남을 수 있습니다. 데이터베이스 저장, 메뉴 ID·메뉴 경로로
+  부른 File > Save 모두 파일은 저장하지만 `*`는 지우지 못했습니다. Capture에서 Ctrl+S를 누르면 지워집니다.
 - 쓰기 도구는 MCP 어노테이션에 destructive로 표시되어 클라이언트가 승인을 묻습니다.
 - `run_tcl`은 Capture Tcl이 할 수 있는 모든 일(프로그램 실행 포함)을 할 수 있습니다. `ORCAD_MCP_ALLOW_TCL=0`으로
   끌 수 있습니다.

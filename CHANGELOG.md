@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 - 2026-11-20
+
+- `save_design` saves through the database again and reports `file_written` (whether the `.dsn` was rewritten).
+  The File > Save menu route of 0.2.0 did not clear Capture's `*` mark either (tried by menu id and by menu
+  path; only Ctrl+S typed in Capture clears it) and drew the page marker first, so it was removed.
+
 ## 0.2.1 - 2026-11-20
 
 - Fix: an empty list argument reached Capture as the two characters `{}` instead of an empty value, so

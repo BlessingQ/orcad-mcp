@@ -600,7 +600,6 @@ proc ::orcadmcp::c_close {spec discard} {
 namespace eval ::orcadmcp {
     variable CMD_NEXT_PAGE 17751
     variable CMD_PREV_PAGE 17752
-    variable CMD_FILE_SAVE 57603
     # hotspot offset (dx dy) from the placement point, per CAPSYM symbol, rotation 0
     variable symoffset
     array set symoffset {
@@ -1137,18 +1136,6 @@ proc ::orcadmcp::c_check_points {spec name points} {
     }
     $st -delete
     return [jobj page [js $pname] points [jarr $out]]
-}
-
-# Save through Capture's File > Save (menu command, like Ctrl+S) on the page that is shown.
-proc ::orcadmcp::c_save_gui {spec} {
-    variable CMD_FILE_SAVE
-    set d [design $spec]
-    set cur [active_page]
-    if {[llength $cur] == 0 || [lindex $cur 0] ne $d} {
-        error "File > Save needs a page of [file tail [getstr $d GetName]] in the active window"
-    }
-    MenuCommand $CMD_FILE_SAVE
-    return [jobj path [js [getstr $d GetName]] saved true]
 }
 
 # ---------------------------------------------------------------------------------------------
