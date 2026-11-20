@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 - 2026-11-20
+
+- Fix: an empty list argument reached Capture as the two characters `{}` instead of an empty value, so
+  `place_symbol` without `offset` failed ("can't use empty string as operand") and `list_parts` without
+  `properties` asked Capture for an extra unnamed column. Found by running the 0.2.0 tools against Capture.
+- `place_symbol` falls back to the known offset of the symbol when `offset` is not two integers.
+
 ## 0.2.0 - 2026-11-20
 
 - Drawing tools: `active_page`, `goto_page`, `page_objects`, `place_part`, `place_wire`, `place_symbol`,

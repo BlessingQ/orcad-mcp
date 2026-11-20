@@ -35,7 +35,8 @@ def tcl_quote(value: Any) -> str:
     if isinstance(value, bool):
         return "1" if value else "0"
     if isinstance(value, (list, tuple)):
-        return tcl_quote(tcl_list(value))
+        # an empty list is the empty word, not the two characters "{}"
+        return tcl_quote(tcl_list(value)) if value else "{}"
     text = str(value)
     if text == "":
         return "{}"

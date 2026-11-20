@@ -6,7 +6,7 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
 from orcad_mcp import libedit, server
-from orcad_mcp.bridge import TclError
+from orcad_mcp.bridge import TclError, tcl_quote
 
 
 @pytest.fixture
@@ -79,6 +79,8 @@ def test_place_part_arguments(calls):
 def test_place_symbol_defaults(calls):
     server.place_symbol("USB", "offpage", "USB_DP", 10, 20)
     assert calls[-1] == ("place_symbol", ("", "USB", "offpage", "USB_DP", 10, 20, "OFFPAGELEFT-L", "", []))
+    # the empty offset must reach Tcl as an empty word (it arrived as "{}" in 0.2.0)
+    assert tcl_quote([]) == "{}"
     server.place_symbol("USB", "ground", "GND_SIGNAL", 1, 2, symbol="GND_SIGNAL", offset=[10, 0])
     assert calls[-1][1][6:] == ("GND_SIGNAL", "", [10, 0])
     with pytest.raises(ToolError, match="offset"):

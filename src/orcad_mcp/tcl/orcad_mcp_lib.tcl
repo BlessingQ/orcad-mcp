@@ -968,7 +968,8 @@ proc ::orcadmcp::c_place_symbol {spec name kind netname x y symbol lib offset} {
     if {$lib eq ""} {
         set lib [capsym]
     }
-    if {$offset eq ""} {
+    if {[llength $offset] != 2 || ![string is integer -strict [lindex $offset 0]]
+        || ![string is integer -strict [lindex $offset 1]]} {
         if {![info exists symoffset([string toupper $symbol])]} {
             error "unknown hotspot offset for symbol '$symbol'; pass offset"
         }

@@ -43,6 +43,16 @@ def test_quote_lists(tcl):
     assert tcl_quote(True) == "1" and tcl_quote(False) == "0"
 
 
+def test_quote_empty_lists(tcl):
+    # place_symbol without offset sent [] that arrived in Tcl as the 2-character string "{}"
+    tcl.eval(f"set x {tcl_quote([])}")
+    assert tcl.getvar("x") == "" and tcl.eval("llength $x") == "0"
+    tcl.eval(f"set x {tcl_quote([[1, 2], [], ['a b']])}")
+    assert tcl.eval("llength $x") == "3"
+    assert tcl.eval("lindex $x 1") == ""
+    assert tcl.eval("llength [lindex $x 2]") == "1" and tcl.eval("lindex [lindex $x 2] 0") == "a b"
+
+
 def test_bridge_version_matches_tcl():
     text = (TCL_DIR / "orcad_bridge.tcl").read_text(encoding="ascii")
     assert re.search(r"variable version (\d+)", text).group(1) == str(BRIDGE_VERSION)
